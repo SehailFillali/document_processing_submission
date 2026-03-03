@@ -191,7 +191,7 @@ class TestOpenAIAdapter:
         from doc_extract.adapters.openai_adapter import OpenAIAdapter
 
         adapter = OpenAIAdapter(api_key="test-key")
-        assert adapter.model_name == "gpt-4o-mini"
+        assert adapter.model_name == "gpt-4o"
         assert adapter.api_key == "test-key"
 
     def test_get_model_info(self):

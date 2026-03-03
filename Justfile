@@ -32,7 +32,7 @@ build-image:
 
 # Run with Docker Compose
 dev-docker:
-	docker-compose up --build
+	docker-compose up -d --build
 
 # Run evaluation script (to be implemented)
 evaluate:

@@ -24,12 +24,20 @@ For the borrower's name and address, also provide:
 - The verbatim text containing the name/address
 - Your confidence score (0.0 to 1.0)
 
-For each piece of information extracted, note:
-1. The page number where it was found (if applicable)
-2. The verbatim text that supports the extraction
-3. Your confidence score (0.0 to 1.0)
+QUALITY RULES (MUST FOLLOW):
+- If a field has a value, provide provenance for it whenever the schema supports provenance.
+- Do not output null provenance for populated `name`, `address`, income entries, or account entries unless the document is genuinely unreadable.
+- Populate `source_documents` with the actual source filename(s) used.
+- `income_history` should contain actual income sources only (wages, salary, self-employment, bonuses).
+- Do NOT treat taxes/withholdings/deductions (e.g., Medicare tax, Social Security tax, federal withholding) as income entries.
+- If evidence is missing, return null/empty for that value rather than guessing.
 
-If information is missing or unclear, explicitly state that it was not found rather than making up data.
+For each extracted value, include:
+1. Source page number
+2. Verbatim supporting text
+3. Confidence score (0.0 to 1.0)
+
+If information is missing or unclear, explicitly state it was not found rather than inventing data.
 """
 
 
@@ -38,7 +46,7 @@ class OpenAIAdapter:
 
     def __init__(self, api_key: str | None = None):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
-        self.model_name = "gpt-4o-mini"
+        self.model_name = os.environ.get("OPENAI_MODEL", "gpt-4o")
         logger.info(f"Initialized OpenAIAdapter with model: {self.model_name}")
 
     async def extract_structured(
@@ -104,19 +112,31 @@ class OpenAIAdapter:
                 },
             )
 
-            extracted_data = request.output_schema.model_validate_json(
-                response.choices[0].message.content
-            )
+            raw_content = response.choices[0].message.content
+            if raw_content is None:
+                raise LLMError(
+                    message="OpenAI returned empty response content",
+                    error_type="EMPTY_RESPONSE",
+                    recoverable=True,
+                )
+
+            extracted_data = request.output_schema.model_validate_json(raw_content)
 
             processing_time = time.time() - start_time
 
             return ExtractionResponse(
                 extracted_data=extracted_data,
-                raw_output=response.choices[0].message.content,
+                raw_output=raw_content,
                 token_usage={
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
-                    "total_tokens": response.usage.total_tokens,
+                    "prompt_tokens": response.usage.prompt_tokens
+                    if response.usage
+                    else 0,
+                    "completion_tokens": (
+                        response.usage.completion_tokens if response.usage else 0
+                    ),
+                    "total_tokens": response.usage.total_tokens
+                    if response.usage
+                    else 0,
                 },
                 confidence_score=0.85,
                 processing_time_seconds=processing_time,

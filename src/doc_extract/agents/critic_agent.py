@@ -67,6 +67,7 @@ class CriticAgent:
 
     def __init__(self, llm_adapter=None):
         """Initialize with an LLM adapter (defaults to OpenAIAdapter)."""
+        self.model_name = os.environ.get("OPENAI_CRITIC_MODEL", "gpt-4o")
         if llm_adapter is None:
             from doc_extract.adapters.openai_adapter import OpenAIAdapter
 
@@ -138,7 +139,7 @@ class CriticAgent:
                 user_content = f"Source document: {document_url}\n\n{text_message}"
 
             response = await client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.model_name,
                 messages=[
                     {"role": "system", "content": CRITIQUE_PROMPT},
                     {"role": "user", "content": user_content},
@@ -152,9 +153,11 @@ class CriticAgent:
                 },
             )
 
-            result = CritiqueResult.model_validate_json(
-                response.choices[0].message.content
-            )
+            raw_content = response.choices[0].message.content
+            if raw_content is None:
+                raise ValueError("Critique response content is empty")
+
+            result = CritiqueResult.model_validate_json(raw_content)
 
             # Calculate overall score
             if result.assessments:

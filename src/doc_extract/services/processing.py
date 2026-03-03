@@ -11,9 +11,11 @@ ADR Reference: docs/adr/020_multi_critic_panel.md
 """
 
 import time
+from pathlib import Path
+from typing import cast
 
 from doc_extract.adapters.local_storage import LocalFileSystemAdapter
-from doc_extract.adapters.openai_adapter import OpenAIAdapter
+from doc_extract.adapters.openai_adapter import OpenAIAdapter, SYSTEM_PROMPT
 from doc_extract.agents.critic_agent import CriticAgent, CritiqueResult
 from doc_extract.core.logging import logger
 from doc_extract.core.prometheus import (
@@ -27,6 +29,41 @@ from doc_extract.core.prometheus import (
 # Configurable settings
 QA_THRESHOLD = 80.0  # Score below which we retry
 MAX_RETRIES = 2  # Maximum retry attempts
+
+PLACEHOLDER_SOURCE_MARKERS = (
+    "sample document",
+    "demo purposes",
+)
+
+NON_INCOME_MARKERS = (
+    "withheld",
+    "withholding",
+    "federal income tax",
+    "social security tax",
+    "medicare tax",
+    "fica",
+)
+
+
+EXTRACTION_GUARDRAILS = """
+Additional extraction guardrails:
+- Populate provenance fields whenever a value is extracted (name/address/income/accounts).
+- Populate source_documents with the actual document filename used.
+- Do not classify taxes/withholdings/deductions as income (e.g., Medicare tax, SS tax, withholding).
+- If a value cannot be verified in the document, leave it null/empty rather than guessing.
+""".strip()
+
+
+def _is_placeholder_source(value: str | None) -> bool:
+    if not value:
+        return True
+    lowered = value.lower()
+    return any(marker in lowered for marker in PLACEHOLDER_SOURCE_MARKERS)
+
+
+def _looks_like_non_income(label: str | None, evidence: str | None) -> bool:
+    haystack = f"{label or ''} {evidence or ''}".lower()
+    return any(marker in haystack for marker in NON_INCOME_MARKERS)
 
 
 class ProcessingService:
@@ -72,12 +109,18 @@ class ProcessingService:
                 if feedback_history:
                     feedback_block = "\n".join(f"- {note}" for note in feedback_history)
                     system_prompt = (
+                        f"{SYSTEM_PROMPT}\n\n"
+                        f"{EXTRACTION_GUARDRAILS}\n\n"
                         "IMPORTANT: Previous extraction had errors. "
                         "Please correct the following issues:\n"
                         f"{feedback_block}\n\n"
                         "Re-extract all fields carefully, paying special attention "
                         "to the fields mentioned above."
-                    )
+                    ).strip()
+                else:
+                    system_prompt = (
+                        f"{SYSTEM_PROMPT}\n\n{EXTRACTION_GUARDRAILS}"
+                    ).strip()
 
                 request = ExtractionRequest(
                     document_url=document_url,
@@ -137,6 +180,72 @@ class ProcessingService:
 
             pipeline_time = time.time() - pipeline_start
 
+            if best_result is None:
+                raise RuntimeError("No extraction result produced")
+
+            # Deterministic output hygiene to avoid placeholder provenance and
+            # common misclassification of tax withholdings as income.
+            profile = cast(BorrowerProfile, best_result.extracted_data)
+            source_filename = Path(storage_path).name
+            if "_" in source_filename:
+                source_filename = source_filename.split("_", 1)[1]
+
+            validation_notes: list[str] = []
+
+            if not profile.source_documents or any(
+                _is_placeholder_source(doc) for doc in profile.source_documents
+            ):
+                profile.source_documents = [source_filename]
+
+            if profile.name and profile.name_provenance is None:
+                validation_notes.append("Missing provenance for borrower name")
+                profile.requires_manual_review = True
+
+            if profile.address and profile.address_provenance is None:
+                validation_notes.append("Missing provenance for borrower address")
+                profile.requires_manual_review = True
+
+            for prov in (profile.name_provenance, profile.address_provenance):
+                if prov and _is_placeholder_source(prov.source_document):
+                    prov.source_document = source_filename
+
+            filtered_income = []
+            removed_non_income = 0
+            for income in profile.income_history:
+                evidence = (
+                    income.provenance.verbatim_text if income.provenance else None
+                )
+                if _looks_like_non_income(income.source, evidence):
+                    removed_non_income += 1
+                    continue
+
+                if income.provenance and _is_placeholder_source(
+                    income.provenance.source_document
+                ):
+                    income.provenance.source_document = source_filename
+
+                filtered_income.append(income)
+
+            if removed_non_income:
+                validation_notes.append(
+                    f"Removed {removed_non_income} withholding/tax entries from income_history"
+                )
+                profile.requires_manual_review = True
+
+            profile.income_history = filtered_income
+
+            for account in profile.accounts:
+                if account.provenance and _is_placeholder_source(
+                    account.provenance.source_document
+                ):
+                    account.provenance.source_document = source_filename
+
+            for note in validation_notes:
+                if note not in profile.validation_errors:
+                    profile.validation_errors.append(note)
+
+            profile.extraction_confidence = profile.calculate_overall_confidence()
+
             EXTRACTION_REQUESTS.labels(status="success").inc()
             EXTRACTION_DURATION.labels(document_type="loan_application").observe(
                 pipeline_time
@@ -145,7 +254,7 @@ class ProcessingService:
 
             return {
                 "status": "success",
-                "data": best_result.extracted_data.model_dump(),
+                "data": profile.model_dump(),
                 "confidence": best_result.confidence_score,
                 "processing_time": pipeline_time,
                 "qa_score": best_qa_score,
