@@ -25,12 +25,24 @@ def _coerce_date(v: object) -> object:
         return None
     if isinstance(v, (date, datetime)):
         return v
+    # BUG-1 fix: LLM sometimes returns a bare integer year (e.g. 2024)
+    if isinstance(v, (int, float)):
+        year = int(v)
+        if 2000 <= year <= 2099:
+            return date(year, 1, 1)
+        return None
     if isinstance(v, str):
         v = v.strip()
         if _is_null_sentinel(v):
             return None
-        # Try MM/DD/YYYY format
-        for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y"):
+        # Bare year string like "2024"
+        if v.isdigit() and len(v) == 4:
+            year = int(v)
+            if 2000 <= year <= 2099:
+                return date(year, 1, 1)
+            return None
+        # Try common date formats including 2-digit year (BUG-2 fix)
+        for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%m/%d/%y", "%m-%d-%y"):
             try:
                 return datetime.strptime(v, fmt).date()
             except ValueError:
