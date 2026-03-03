@@ -1,0 +1,41 @@
+{
+  "paystub_001": {
+    "name": "John Homeowner",
+    "address": {
+      "street": "1234 Main St",
+      "city": "Anytown",
+      "state": "CA",
+      "zip_code": "90210",
+      "country": "US"
+    },
+    "phone": "1234567890",
+    "email": "john.homeowner@example.com",
+    "income_history": [
+      {
+        "amount": 5000.0,
+        "period_start": "2024-01-01",
+        "period_end": "2024-09-30",
+        "source": "Employer"
+      }
+    ],
+    "ssn_last_four": null
+  },
+  "w2_001": {
+    "name": "John Homeowner",
+    "address": {
+      "street": "1234 Main St",
+      "city": "Anytown", 
+      "state": "CA",
+      "zip_code": "90210",
+      "country": "US"
+    },
+    "income_history": [
+      {
+        "amount": 60000.0,
+        "period_start": "2024-01-01",
+        "period_end": "2024-12-31",
+        "source": "Annual W2"
+      }
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+name: Run Evaluation
+
+on:
+  workflow_dispatch:
+    inputs:
+      golden_set:
+        description: 'Path to golden set JSON'
+        required: true
+        default: 'tests/evaluation/golden_set.json'
+      output_file:
+        description: 'Output file for results'
+        required: false
+        default: 'evaluation_results.json'
+
+jobs:
+  evaluate:
+    name: Run Extraction Evaluation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install -e .[dev]
+      
+      - name: Run evaluation
+        run: |
+          python -m tests.evaluation.run_eval \
+            --golden-set ${{ inputs.golden_set }} \
+            --output ${{ inputs.output_file }}
+      
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-results
+          path: ${{ inputs.output_file }}
