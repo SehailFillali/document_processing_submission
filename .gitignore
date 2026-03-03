@@ -30,6 +30,7 @@ htmlcov/
 # Data
 data/*.db
 data/*.sqlite
+uploads/
 uploads/*.pdf
 uploads/*.json
 
