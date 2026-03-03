@@ -213,40 +213,34 @@ This enables:
 
 ## 5. Processing Pipeline
 
-### 3-Node Pipeline: Preprocess → Extract → Validate
+### Self-Correction Loop: Extract → Critique → Retry
+
+Our primary processing pipeline (`ProcessingService`) implements a self-correction loop. An alternative 3-node implementation exists in `graph.py`, but the main flow prioritizes extraction quality through iterative refinement:
 
 ```
                     ┌─────────────────┐
                     │   Preprocess    │
-                    │                 │
-                    │ • File exists?  │
-                    │ • Size OK?     │
-                    │ • Type valid?  │
+                    │ (File checks)   │
                     └────────┬────────┘
                              │
                     ┌────────▼────────┐
-                    │    Extract      │
-                    │                 │
-                    │ • Call LLM      │
-                    │ • Parse output  │
-                    │ • Track tokens  │
-                    └────────┬────────┘
+              ┌────▶│    Extract      │
+              │     │ (LLM pass)      │
+              │     └────────┬────────┘
+              │              │
+              │     ┌────────▼────────┐
+              │     │   Critique      │
+              │     │ (QA score &     │
+              │     │  feedback)      │
+              │     └────────┬────────┘
+              │              │
+              └──────[Score < 80%]
                              │
-                    ┌────────▼────────┐
-                    │   Validate      │
-                    │                 │
-                    │ • Required flds │
-                    │ • Confidence?   │
-                    │ • Consistency?  │
-                    └────────┬────────┘
+                      [Score >= 80%
+                       or max retries]
                              │
                     ┌────────▼────────┐
                     │     Result      │
-                    │                 │
-                    │ • completed     │
-                    │ • partial       │
-                    │ • manual_review │
-                    │ • failed        │
                     └─────────────────┘
 ```
 
@@ -291,7 +285,7 @@ All errors return a consistent structure:
 ```json
 {
   "error": {
-    "code": "E2001",
+    "code": "PROC_EXTRACTION_FAILED",
     "message": "Document processing failed",
     "details": { "stage": "extraction", "reason": "..." },
     "retry_after": null
@@ -348,6 +342,7 @@ Every error has a machine-readable code for programmatic handling:
 
 | Category | Range | Example |
 |----------|-------|---------|
+| Authentication | `AUTH_*` | `AUTH_MISSING_API_KEY` |
 | Validation | `VAL_*` | `VAL_FILE_TOO_LARGE` |
 | Processing | `PROC_*` | `PROC_EXTRACTION_FAILED` |
 | Storage | `STORAGE_*` | `STORAGE_FILE_NOT_FOUND` |
@@ -479,8 +474,8 @@ Additional changes:
 | **Task Runner** | just | Self-documenting, shell-agnostic |
 | **API** | FastAPI | Async-native, auto-docs, Pydantic integration |
 | **Validation** | Pydantic v2 | Strict mode, JSON schema generation |
-| **LLM Agent** | PydanticAI | Structured output with type safety |
-| **LLM Provider** | OpenAI gpt-4o-mini | Best PydanticAI integration, reviewer-friendly |
+| **LLM Integration** | OpenAI SDK (primary) + PydanticAI (secondary) | Structured output with type safety |
+| **LLM Provider** | OpenAI gpt-4o | Best structured output support, reviewer-friendly |
 | **Database** | SQLite (MVP) | Zero config, portable |
 | **Storage** | Local + MinIO | S3-compatible, easy Docker setup |
 | **Observability** | Logfire | Pydantic ecosystem, LLM cost tracking |
@@ -523,12 +518,11 @@ Every architectural decision involves trade-offs. This section consolidates the 
 
 | Decision | What We Traded Away | Why It's Worth It | ADR |
 |----------|--------------------|--------------------|-----|
-| **Native LLM PDF ingestion** over local text extraction | Higher token cost per document (~$0.05/doc) | Eliminates entire PDF parsing subsystem. LLM handles scanned docs, tables, and forms natively. Zero preprocessing infrastructure. | [024](docs/adr/024_native_llm_pdf_ingestion.md) |
-| **SQLite** over PostgreSQL for MVP | Concurrency, multi-instance deployment | Zero configuration, single file, portable. `DatabasePort` interface allows swap to Postgres without code changes. | [002](docs/adr/002_pydantic_domain.md) |
+| **Native LLM PDF ingestion** over local text extraction | Higher token cost per document (~$0.75-$1.50/doc) | Eliminates entire PDF parsing subsystem. LLM handles scanned docs, tables, and forms natively. Zero preprocessing infrastructure. | [024](docs/adr/024_native_llm_pdf_ingestion.md) |
+| **SQLite database** over PostgreSQL for MVP | Concurrency, multi-instance deployment | `SQLiteAdapter` is fully wired in `main.py` for both submissions and profiles, meeting MVP persistence needs. A production database like Postgres would be swapped in later via the `DatabasePort`. | [002](docs/adr/002_pydantic_domain.md) |
 | **Synchronous processing** over async queue | Throughput at scale | MVP handles <100 docs/day. Pub/Sub adapter is implemented and ready for the 10x phase. Simplicity reduces debugging surface. | [005](docs/adr/005_event_driven.md) |
 | **Custom circuit breaker** over pybreaker/Tenacity | Library maintenance savings | pybreaker lacks async support. Custom implementation is 202 lines, fully tested, and gives complete control over state transitions and the health API. | [016](docs/adr/016_circuit_breaker_resilience.md) |
-| **OpenAI gpt-4o-mini** as default over Gemini/Claude | Provider lock-in risk | Best structured output support via `response_format: json_schema`. Lowest cost for quality. `LLMPort` abstraction mitigates lock-in — Gemini adapter also implemented. | [010](docs/adr/010_llm_provider_selection.md) |
-| **In-memory submission storage** over database-backed | Data lost on restart | `SQLiteAdapter` is implemented and tested (191 lines, full CRUD). Wiring deferred to focus engineering time on extraction quality, resilience, and observability. Acceptable for demo. | — |
+| **OpenAI gpt-4o** as default over Gemini/Claude | Provider lock-in risk | Best structured output support via `response_format: json_schema`. High intelligence for extraction. `LLMPort` abstraction mitigates lock-in — Gemini adapter also implemented. | [010](docs/adr/010_llm_provider_selection.md) |
 | **Hexagonal architecture** over simpler layered | More boilerplate (ports + adapters) | Enables parallel team development — engineers add adapters without touching core logic. Swappable infrastructure for scaling tiers. Worth the upfront cost for a system designed to grow. | [001](docs/adr/001_hexagonal_architecture.md) |
 
 ### Design Principles Behind These Choices
